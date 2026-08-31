@@ -254,6 +254,221 @@ local R = {
 }
 
 -- ====================================================
+--  🔐 MEGALO PER-USER KEY LOCK (SERVER-VERIFIED)
+--  A key only works for the exact Roblox username it is
+--  paired with on your Google Sheet backend. No sharing.
+--  Set these two constants to YOUR endpoints.
+-- ====================================================
+local AUTH_API_URL   = "https://script.google.com/macros/s/AKfycbzSIEtLGRb7WKmGvBn8ZWjR3B3xXBb3YW6sMZjTGt9xwJ0MrTnDPVHrgeAtEc7OjW_D/exec"  -- your Google Web App (validates username+key)
+local AUTH_WEBHOOK   = "https://discordapp.com/api/webhooks/1544132898716647507/c0RxASbeCqhhn_Fxh9DiPXVc5-7yYZYgWV_8n_E_WnOFDj9PbMjNA7AM4x25QVgx6xIv"  -- Discord webhook for auth logs
+local AUTH_CONFIG    = "MFG_HUB_Auth.json"
+local AUTH_UNLOCKED  = false
+
+-- Verify a username+key against your Google backend.
+-- Returns true only when the backend replies VALID.
+local function mfgVerifyKey(username, key)
+	local ok = false
+	pcall(function()
+		local url = AUTH_API_URL .. "?u=" .. HttpService:UrlEncode(username) .. "&k=" .. HttpService:UrlEncode(key)
+		local body = ""
+		if request then
+			local res = request({ Url = url, Method = "GET" })
+			if type(res) == "table" then body = res.Body or "" end
+		elseif HttpGet then
+			body = HttpGet(url) or ""
+		end
+		ok = (body:upper():match("VALID") ~= nil)
+	end)
+	return ok
+end
+
+-- Send an auth-log message to your Discord webhook.
+local function mfgAuthLog(title, desc, color)
+	pcall(function()
+		local embed = {
+			embeds = {{
+				title = title,
+				description = desc,
+				color = color,
+				footer = { text = "MFG HUB Key Log | " .. os.date("%Y-%m-%d %H:%M:%S") },
+			}}
+		}
+		if request then
+			request({
+				Url = AUTH_WEBHOOK,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = HttpService:JSONEncode(embed),
+			})
+		end
+	end)
+end
+
+-- Try to auto-unlock from a previous valid unlock on this machine.
+local function mfgLoadSavedUnlock()
+	pcall(function()
+		if readfile and isfile and isfile(AUTH_CONFIG) then
+			local data = HttpService:JSONDecode(readfile(AUTH_CONFIG))
+			if type(data) == "table" and data[player.UserId] then
+				AUTH_UNLOCKED = true
+			end
+		end
+	end)
+end
+
+local function mfgSaveUnlock()
+	pcall(function()
+		local data = {}
+		if readfile and isfile and isfile(AUTH_CONFIG) then
+			local ok, old = pcall(function() return HttpService:JSONDecode(readfile(AUTH_CONFIG)) end)
+			if ok and type(old) == "table" then data = old end
+		end
+		data[player.UserId] = true
+		if writefile then pcall(function() writefile(AUTH_CONFIG, HttpService:JSONEncode(data)) end) end
+	end)
+end
+
+-- ====================================================
+--  🔐 UNLOCK UI + GATE
+--  Builds a fullscreen lock. The whole script below this
+--  point only runs after a VALID key for THIS username.
+-- ====================================================
+mfgLoadSavedUnlock()
+
+if not AUTH_UNLOCKED then
+	task.spawn(function()
+		-- Build the lock screen
+		local lock = Instance.new("ScreenGui")
+		lock.Name = "MFG_LOCK"
+		lock.ResetOnSpawn = false
+		lock.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		lock.DisplayOrder = 999
+		lock.Parent = player:WaitForChild("PlayerGui")
+
+		local bg = Instance.new("Frame")
+		bg.Size = UDim2.new(1, 0, 1, 0)
+		bg.BackgroundColor3 = Color3.fromRGB(8, 9, 14)
+		bg.BackgroundTransparency = 0.15
+		bg.Parent = lock
+
+		local shade = Instance.new("Frame")
+		shade.AnchorPoint = Vector2.new(0.5, 0.5)
+		shade.Size = UDim2.new(0, 420, 0, 300)
+		shade.Position = UDim2.new(0.5, 0, 0.45, 0)
+		shade.BackgroundColor3 = Color3.fromRGB(18, 20, 31)
+		shade.BorderSizePixel = 0
+		shade.Parent = bg
+
+		local title = Instance.new("TextLabel")
+		title.Size = UDim2.new(1, 0, 0, 44)
+		title.BackgroundTransparency = 1
+		title.Font = Enum.Font.GothamBold
+		title.Text = "🔐 MFG HUB"
+		title.TextColor3 = Color3.fromRGB(88, 101, 242)
+		title.TextSize = 24
+		title.Parent = shade
+
+		local sub = Instance.new("TextLabel")
+		sub.AnchorPoint = Vector2.new(0.5, 0)
+		sub.Size = UDim2.new(1, -32, 0, 20)
+		sub.Position = UDim2.new(0.5, 0, 0, 44)
+		sub.BackgroundTransparency = 1
+		sub.Font = Enum.Font.Gotham
+		sub.Text = "Enter your private key  ·  " .. player.Name
+		sub.TextColor3 = Color3.fromRGB(170, 175, 195)
+		sub.TextSize = 13
+		sub.Parent = shade
+
+		local status = Instance.new("TextLabel")
+		status.AnchorPoint = Vector2.new(0.5, 0)
+		status.Size = UDim2.new(1, -32, 0, 20)
+		status.Position = UDim2.new(0.5, 0, 0, 70)
+		status.BackgroundTransparency = 1
+		status.Font = Enum.Font.Gotham
+		status.Text = ""
+		status.TextColor3 = Color3.fromRGB(255, 90, 90)
+		status.TextSize = 12
+		status.Parent = shade
+
+		local box = Instance.new("TextBox")
+		box.AnchorPoint = Vector2.new(0.5, 0)
+		box.Size = UDim2.new(1, -64, 0, 42)
+		box.Position = UDim2.new(0.5, 0, 0, 100)
+		box.BackgroundColor3 = Color3.fromRGB(13, 15, 22)
+		box.BorderColor3 = Color3.fromRGB(60, 66, 94)
+		box.PlaceholderText = "Enter your key..."
+		box.Font = Enum.Font.Gotham
+		box.TextColor3 = Color3.fromRGB(230, 233, 245)
+		box.TextSize = 16
+		box.Parent = shade
+
+		local button = Instance.new("TextButton")
+		button.AnchorPoint = Vector2.new(0.5, 0)
+		button.Size = UDim2.new(1, -64, 0, 44)
+		button.Position = UDim2.new(0.5, 0, 0, 158)
+		button.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+		button.Font = Enum.Font.GothamBold
+		button.Text = "UNLOCK"
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
+		button.TextSize = 15
+		button.Parent = shade
+
+		local note = Instance.new("TextLabel")
+		note.AnchorPoint = Vector2.new(0.5, 0)
+		note.Size = UDim2.new(1, -32, 0, 24)
+		note.Position = UDim2.new(0.5, 0, 0, 214)
+		note.BackgroundTransparency = 1
+		note.Font = Enum.Font.Gotham
+		note.Text = "One key per user · keys are personal"
+		note.TextColor3 = Color3.fromRGB(120, 126, 150)
+		note.TextSize = 11
+		note.Parent = shade
+
+		local trying = false
+		local function attempt(entered)
+			if trying then return end
+			trying = true
+			button.Text = "VERIFYING..."
+			status.Text = ""
+			local enteredKey = (entered or box.Text or ""):gsub("%s", "")
+			if enteredKey == "" then
+				status.Text = "Please enter a key."
+				button.Text = "UNLOCK"
+				trying = false
+				return
+			end
+			task.spawn(function()
+				local valid = mfgVerifyKey(player.Name, enteredKey)
+				if valid then
+					AUTH_UNLOCKED = true
+					mfgSaveUnlock()
+					mfgAuthLog("✅ Unlocked", "**" .. player.Name .. "** unlocked MFG HUB.", 5763719)
+					status.Text = "✅ Access granted!"
+					status.TextColor3 = Color3.fromRGB(90, 220, 120)
+					task.wait(0.6)
+					lock:Destroy()
+				else
+					mfgAuthLog("❌ Invalid Key", "**" .. player.Name .. "** tried key `" .. enteredKey .. "` (failed).", 15548997)
+					status.Text = "❌ Invalid key for this account."
+					status.TextColor3 = Color3.fromRGB(255, 90, 90)
+					button.Text = "UNLOCK"
+					trying = false
+				end
+			end)
+		end
+
+		button.MouseButton1Click:Connect(function() attempt() end)
+		box.FocusLost:Connect(function(enter) if enter then attempt() end end)
+	end)
+
+	-- BLOCK the main script until the key is validated
+	while not AUTH_UNLOCKED do
+		task.wait(0.2)
+	end
+	task.wait(0.4)  -- let the lock screen fade
+end
+
+-- ====================================================
 --  CONFIG PERSISTENCE (100% RELIABLE)
 -- ====================================================
 local CONFIG_FILE = "MFG_HUB_Config.json"
