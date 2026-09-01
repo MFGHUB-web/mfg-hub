@@ -1,25 +1,19 @@
 -- ============================================================
 --  MFG HUB — PUBLIC LOADER (Speed-Hub Style Key System)
---  Upload this entire file to your GitHub repository:
---  https://raw.githubusercontent.com/MFGHUB-web/mfg-hub/main/MFG_Loader.lua
 -- ============================================================
 
-local Players     = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-local TweenService = game:GetService("TweenService")
-local CoreGui     = game:GetService("CoreGui")
+local Players      = game:GetService("Players")
+local HttpService  = game:GetService("HttpService")
+local CoreGui      = game:GetService("CoreGui")
 
-local player      = Players.LocalPlayer
-local AUTH_CONFIG = "MFG_HUB_Auth.json"
+local player       = Players.LocalPlayer
+local AUTH_CONFIG  = "MFG_HUB_Auth.json"
 
 -- ▼▼ YOUR GOOGLE APPS SCRIPT WEB APP /EXEC URL ▼▼
 local GS_URL = "https://script.google.com/macros/s/AKfycbyrSDew8mAt2PqsxBgYsqtJNcawaQB6RNBjVqjg1viMPtpwHn-HPMfz8ydlpk3CL1x7/exec"
-local DISCORD_LINK = "https://discord.gg/dgagJy6X9V" -- (Optional: Replace with your Discord invite link)
+local DISCORD_LINK = "https://discord.gg/dgagJy6X9V"
 -- ▲▲ EDIT THESE ▲▲
 
--- ============================================================
---  AUTH CONFIG PERSISTENCE
--- ============================================================
 local function loadSavedKey()
 	local saved = nil
 	pcall(function()
@@ -29,6 +23,8 @@ local function loadSavedKey()
 				local uid = tostring(player.UserId)
 				if type(data[uid]) == "string" and #data[uid] > 0 then
 					saved = data[uid]
+				elseif type(data[player.Name]) == "string" and #data[player.Name] > 0 then
+					saved = data[player.Name]
 				end
 			end
 		end
@@ -44,14 +40,12 @@ local function saveKey(key)
 				pcall(function() data = HttpService:JSONDecode(readfile(AUTH_CONFIG)) or {} end)
 			end
 			data[tostring(player.UserId)] = key
+			data[player.Name] = key
 			writefile(AUTH_CONFIG, HttpService:JSONEncode(data))
 		end
 	end)
 end
 
--- ============================================================
---  FETCH & EXECUTE BACKEND SCRIPT
--- ============================================================
 local function fetchAndRun(key, statusLabel, callback)
 	if not key or key:gsub("%s", "") == "" then
 		if statusLabel then statusLabel.Text = "⚠️ Please enter a key!" statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100) end
@@ -63,10 +57,12 @@ local function fetchAndRun(key, statusLabel, callback)
 	if statusLabel then statusLabel.Text = "⏳ Verifying key with server..." statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80) end
 
 	task.spawn(function()
-		local url = string.format("%s?key=%s&uid=%s&name=%s",
+		local url = string.format("%s?u=%s&k=%s&m=script&uid=%s&key=%s&name=%s",
 			GS_URL,
+			HttpService:UrlEncode(player.Name),
 			HttpService:UrlEncode(key),
 			tostring(player.UserId),
+			HttpService:UrlEncode(key),
 			HttpService:UrlEncode(player.Name)
 		)
 
@@ -74,16 +70,19 @@ local function fetchAndRun(key, statusLabel, callback)
 			return game:HttpGet(url, true)
 		end)
 
-		if not ok or not res or res == "" or res == "INVALID" or res:find("<!DOCTYPE") or res:find("<html") then
+		if not ok or not res or res == "" or res == "INVALID" or res:find("^B64ERR") or res:find("<!DOCTYPE") or res:find("<html") then
 			if statusLabel then
-				statusLabel.Text = "❌ Invalid or expired key! Check your key."
+				if res and res:find("^B64ERR") then
+					statusLabel.Text = "❌ Server Error: " .. res
+				else
+					statusLabel.Text = "❌ Invalid key for account: " .. player.Name
+				end
 				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 			end
 			if callback then callback(false) end
 			return
 		end
 
-		-- Valid script returned
 		if statusLabel then
 			statusLabel.Text = "✅ Key verified! Loading MFG HUB..."
 			statusLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
@@ -92,14 +91,13 @@ local function fetchAndRun(key, statusLabel, callback)
 		saveKey(key)
 		task.wait(0.5)
 
-		-- Execute the downloaded script
 		local func, err = loadstring(res)
 		if func then
 			task.spawn(func)
 			if callback then callback(true) end
 		else
 			if statusLabel then
-				statusLabel.Text = "❌ Script syntax error in backend response!"
+				statusLabel.Text = "❌ Script error in backend response!"
 				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 			end
 			warn("[MFG Loader Error]:", err)
@@ -108,9 +106,6 @@ local function fetchAndRun(key, statusLabel, callback)
 	end)
 end
 
--- ============================================================
---  KEY INPUT GUI (Speed-Hub Style)
--- ============================================================
 local function showKeyGui()
 	local guiParent = pcall(function() return CoreGui.Name end) and CoreGui or player:WaitForChild("PlayerGui")
 	local old = guiParent:FindFirstChild("MFG_KeySystem")
@@ -140,7 +135,6 @@ local function showKeyGui()
 	mainStroke.Thickness = 1.5
 	mainStroke.Parent = main
 
-	-- Top Header
 	local header = Instance.new("Frame")
 	header.Size = UDim2.new(1, 0, 0, 42)
 	header.BackgroundColor3 = Color3.fromRGB(20, 23, 35)
@@ -180,19 +174,17 @@ local function showKeyGui()
 		sg:Destroy()
 	end)
 
-	-- Subtitle / instruction
 	local sub = Instance.new("TextLabel")
 	sub.Size = UDim2.new(1, -28, 0, 20)
 	sub.Position = UDim2.new(0, 14, 0, 52)
 	sub.BackgroundTransparency = 1
-	sub.Text = "Enter your license key below to access MFG HUB:"
+	sub.Text = "Logged in as: " .. player.Name .. " (" .. tostring(player.UserId) .. ")"
 	sub.TextColor3 = Color3.fromRGB(160, 165, 190)
 	sub.Font = Enum.Font.Gotham
 	sub.TextSize = 11
 	sub.TextXAlignment = Enum.TextXAlignment.Left
 	sub.Parent = main
 
-	-- Text Box for Key
 	local boxFrame = Instance.new("Frame")
 	boxFrame.Size = UDim2.new(1, -28, 0, 36)
 	boxFrame.Position = UDim2.new(0, 14, 0, 78)
@@ -223,7 +215,6 @@ local function showKeyGui()
 	box.TextXAlignment = Enum.TextXAlignment.Left
 	box.Parent = boxFrame
 
-	-- Status Label
 	local status = Instance.new("TextLabel")
 	status.Size = UDim2.new(1, -28, 0, 18)
 	status.Position = UDim2.new(0, 14, 0, 120)
@@ -235,7 +226,6 @@ local function showKeyGui()
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.Parent = main
 
-	-- Submit Button
 	local submit = Instance.new("TextButton")
 	submit.Size = UDim2.new(0.5, -18, 0, 34)
 	submit.Position = UDim2.new(0, 14, 0, 148)
@@ -250,12 +240,11 @@ local function showKeyGui()
 	subCorner.CornerRadius = UDim.new(0, 6)
 	subCorner.Parent = submit
 
-	-- Get Key / Discord Button
 	local getKey = Instance.new("TextButton")
 	getKey.Size = UDim2.new(0.5, -18, 0, 34)
 	getKey.Position = UDim2.new(0.5, 4, 0, 148)
-	getKey.BackgroundColor3 = Color3.fromRGB(45, 65, 110)
-	getKey.Text = "Get Key / Discord"
+	getKey.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+	getKey.Text = "💬 Buy Key / Discord"
 	getKey.TextColor3 = Color3.fromRGB(255, 255, 255)
 	getKey.Font = Enum.Font.GothamBold
 	getKey.TextSize = 11.5
@@ -291,19 +280,13 @@ local function showKeyGui()
 	end)
 end
 
--- ============================================================
---  MAIN ENTRY POINT
--- ============================================================
 local savedKey = loadSavedKey()
 if savedKey then
-	-- Attempt silent auto-login with saved key
 	fetchAndRun(savedKey, nil, function(success)
 		if not success then
-			-- Saved key failed or expired -> show Key Window
 			showKeyGui()
 		end
 	end)
 else
-	-- No key saved -> show Key Window
 	showKeyGui()
 end
