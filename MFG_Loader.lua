@@ -14,7 +14,7 @@ local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
 
 -- ▼▼ EDIT THESE ▼▼
-local GS_URL = "https://script.google.com/macros/s/AKfycbxLzZpU03d4cKEbjlzbmI4akgi-cZjivqjYNu2Q0FPJ-Qx1S9fjZvyHV9UlP8FPIS5f/exec"
+local GS_URL = "https://script.google.com/macros/s/AKfycbyrSDew8mAt2PqsxBgYsqtJNcawaQB6RNBjVqjg1viMPtpwHn-HPMfz8ydlpk3CL1x7/exec"
 -- ▲▲ EDIT THESE ▲▲
 
 local player = Players.LocalPlayer
