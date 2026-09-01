@@ -265,7 +265,7 @@ local AUTH_CONFIG    = "MFG_HUB_Auth.json"
 local AUTH_UNLOCKED  = false
 
 -- Verify a username+key against your Google backend.
--- Returns true only when the backend replies VALID.
+-- Returns true only when the backend replies exactly VALID.
 local function mfgVerifyKey(username, key)
 	local ok = false
 	pcall(function()
@@ -277,7 +277,10 @@ local function mfgVerifyKey(username, key)
 		elseif HttpGet then
 			body = HttpGet(url) or ""
 		end
-		ok = (body:upper():match("VALID") ~= nil)
+		-- Exact match: the backend replies "VALID" or "INVALID".
+		-- Using an exact comparison avoids "INVALID" matching "VALID" as a substring.
+		local cleaned = (body or ""):gsub("%s", ""):upper()
+		ok = (cleaned == "VALID")
 	end)
 	return ok
 end
