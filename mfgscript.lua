@@ -158,6 +158,7 @@ local S = {
 	-- Auto Shovel
 	autoShovelEnabled     = false,
 	selectedShovelPlants  = {},  -- e.g. {["Pastel Puff"] = true}
+	shovelRarities        = {},  -- e.g. {["Common"] = true, ["Worldseed"] = true} — shovel by rarity
 	shovelsCount          = 0,
 	shovelProtectHighTier = true,   -- skip plants above shovelMaxTier
 	shovelMaxTier         = 2,      -- default: protect T3+ (shovel T1 & T2 only)
@@ -554,6 +555,8 @@ local function saveConfig(isManual)
 		lowMemOn               = S.lowMemOn,
 		selectedMergePlants    = S.selectedMergePlants,
 		autoShovelEnabled      = S.autoShovelEnabled,
+		selectedShovelPlants   = S.selectedShovelPlants,
+		shovelRarities         = S.shovelRarities,
 		shovelProtectHighTier  = S.shovelProtectHighTier,
 		shovelMaxTier          = S.shovelMaxTier,
 		shovelProtectMutated   = S.shovelProtectMutated,
@@ -1464,7 +1467,17 @@ local function runAutoShovelCycle()
 	for _, v in pairs(S.selectedShovelPlants) do
 		if v then hasFilter = true; break end
 	end
-	if not hasFilter then return end  -- Only shovel plants you explicitly checked
+	for _, v in pairs(S.shovelRarities) do
+		if v then hasFilter = true; break end
+	end
+	if not hasFilter then return end  -- Only shovel plants you explicitly checked OR checked rarities
+
+	-- Match filter: shovel if this plant type is checked, OR its rarity group is checked
+	local function shovelWantsPlant(model)
+		if S.selectedShovelPlants[model.Name] == true then return true end
+		if S.shovelRarities[PLANT_TO_RARITY[model.Name]] == true then return true end
+		return false
+	end
 
 	-- Protection check: skip plants above tier, with mutation, or above star count
 	local function isShovelProtected(model)
@@ -1518,7 +1531,7 @@ local function runAutoShovelCycle()
 					if model:IsA("Model") and model.Name ~= "GardenPlot"
 					   and model:GetAttribute("IsPlantedPlant") == true
 					   and model:GetAttribute("RolledSize") == 1  -- fully grown/shovelable (planted models use RolledSize, not SizeRolled)
-					   and S.selectedShovelPlants[model.Name] == true
+					   and shovelWantsPlant(model)
 					   and not isShovelProtected(model) then  -- skip protected tiers, mutated, protected stars
 						table.insert(toShovel, model)
 					end
@@ -3038,6 +3051,73 @@ UI_Toggles.autoShovel = createToggle(tabFusion, "🪓 Auto Shovel Selected Plant
 	if val then task.spawn(runAutoShovelCycle) end
 end)
 
+-- Shovel by RARITY (quick & simple): tick a rarity to shovel ALL plants of that rarity
+-- (works alongside the individual plant list below — a plant is shovelled if its type
+--  OR its rarity is checked)
+do
+	local rarityLabel = Instance.new("TextLabel")
+	rarityLabel.Size = UDim2.new(1, -6, 0, 18)
+	rarityLabel.BackgroundTransparency = 1
+	rarityLabel.Font = Enum.Font.GothamBold
+	rarityLabel.Text = "🪓 Shovel by Rarity (ticks = shovelled)"
+	rarityLabel.TextColor3 = Color3.fromRGB(230, 170, 70)
+	rarityLabel.TextSize = 11
+	rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+	rarityLabel.Parent = tabFusion
+
+	local rarityFlow = Instance.new("UIGridLayout")
+	rarityFlow.Parent = Instance.new("Frame", tabFusion)
+	rarityFlow.FillDirection = Enum.FillDirection.Vertical
+	rarityFlow.CellSize = UDim2.new(0.5, -4, 0, 26)
+	rarityFlow.CellPadding = UDim2.new(0, 2, 0, 2)
+	local rarityGrid = rarityFlow.Parent
+	rarityGrid.Size = UDim2.new(1, -6, 0, 190)
+	rarityGrid.BackgroundTransparency = 1
+	rarityGrid.Parent = tabFusion
+
+	-- distinct rarities from the seed catalog, in catalog order
+	local shovelRaritiesList = {}
+	local seenCat = {}
+	for _, group in ipairs(SEED_CATALOG) do
+		if not seenCat[group.rarity] then
+			seenCat[group.rarity] = true
+			table.insert(shovelRaritiesList, group.rarity)
+		end
+	end
+
+	local rarityButtons = {}
+	local function refreshRarityButtons()
+		for i, rar in ipairs(shovelRaritiesList) do
+			local btn = rarityButtons[rar]
+			if btn then
+				local on = S.shovelRarities[rar] == true
+				btn.BackgroundColor3 = on and Color3.fromRGB(200, 130, 30) or Color3.fromRGB(40, 45, 60)
+				btn.TextColor3 = on and Color3.fromRGB(10, 5, 0) or Color3.fromRGB(200, 200, 220)
+				btn.Text = (on and "✓ " or "") .. rar
+			end
+		end
+	end
+
+	for i, rar in ipairs(shovelRaritiesList) do
+		local btn = Instance.new("TextButton")
+		btn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+		btn.Font = Enum.Font.GothamBold
+		btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+		btn.TextSize = 10
+		btn.Text = rar
+		btn.Parent = rarityGrid
+		mkCorner(btn, 5)
+		btn.MouseButton1Click:Connect(function()
+			local on = not (S.shovelRarities[rar] == true)
+			S.shovelRarities[rar] = on or nil
+			refreshRarityButtons()
+			saveConfig(false)
+		end)
+		rarityButtons[rar] = btn
+	end
+	refreshRarityButtons()
+end
+
 -- Protection: Skip mutated plants
 UI_Toggles.shovelProtectMutated = createToggle(tabFusion, "🛡️ Protect Mutated Plants", "Skip plants with Gold, Bubble, Snow Flakes, etc. mutations — never shovel them", S.shovelProtectMutated, function(val)
 	S.shovelProtectMutated = val
@@ -4194,6 +4274,7 @@ function loadConfig(silent)
 		if type(data.selectedMergePlants) == "table" then S.selectedMergePlants = data.selectedMergePlants end
 		if data.autoShovelEnabled ~= nil then S.autoShovelEnabled = data.autoShovelEnabled end
 		if type(data.selectedShovelPlants) == "table" then S.selectedShovelPlants = data.selectedShovelPlants end
+		if type(data.shovelRarities) == "table" then S.shovelRarities = data.shovelRarities end
 		if data.shovelProtectHighTier ~= nil then S.shovelProtectHighTier = data.shovelProtectHighTier end
 		if data.shovelMaxTier ~= nil then S.shovelMaxTier = safeNum(data.shovelMaxTier, 2) end
 		if data.shovelProtectMutated ~= nil then S.shovelProtectMutated = data.shovelProtectMutated end
