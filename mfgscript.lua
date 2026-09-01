@@ -339,17 +339,16 @@ end
 --  🔐 UNLOCK UI + GATE (ALWAYS VERIFY)
 --  Every load re-validates against the backend. The
 --  local file only pre-fills the key so it isn't retyped.
---  The whole script below runs only after a VALID key.
+--  The lock screen is shown INSTANTLY so the user never
+--  stares at a black screen while the server is checked.
 -- ====================================================
 local savedKey = mfgLoadSavedKey()
-if savedKey then
-	-- ALWAYS check the server (covers revoke / username change / key change)
-	AUTH_UNLOCKED = mfgVerifyKey(player.Name, savedKey)
-end
-
 if not AUTH_UNLOCKED then
-	local prefillKey = savedKey or ""
 	task.spawn(function()
+		if savedKey then
+			-- Show a quick "Verifying saved key..." note while we check
+			-- (see attempt() auto-run below)
+		end
 		-- Build the lock screen
 		local lock = Instance.new("ScreenGui")
 		lock.Name = "MFG_LOCK"
@@ -413,7 +412,7 @@ if not AUTH_UNLOCKED then
 		box.Font = Enum.Font.Gotham
 		box.TextColor3 = Color3.fromRGB(230, 233, 245)
 		box.TextSize = 16
-		if prefillKey ~= "" then box.Text = prefillKey end
+		if savedKey and savedKey ~= "" then box.Text = savedKey end
 		box.Parent = shade
 
 		local button = Instance.new("TextButton")
@@ -473,6 +472,31 @@ if not AUTH_UNLOCKED then
 
 		button.MouseButton1Click:Connect(function() attempt() end)
 		box.FocusLost:Connect(function(enter) if enter then attempt() end end)
+
+		-- Auto-verify a saved key in the background (shows the UI first, no black wait)
+		if savedKey and savedKey ~= "" then
+			status.Text = "Verifying saved key..."
+			status.TextColor3 = Color3.fromRGB(240, 220, 120)
+			button.Text = "VERIFYING..."
+			task.spawn(function()
+				task.wait(0.1)
+				local valid = mfgVerifyKey(player.Name, savedKey)
+				if valid then
+					AUTH_UNLOCKED = true
+					mfgAuthLog("✅ Unlocked", "**" .. player.Name .. "** unlocked MFG HUB (saved key).", 5763719)
+					status.Text = "✅ Access granted!"
+					status.TextColor3 = Color3.fromRGB(90, 220, 120)
+					task.wait(0.5)
+					lock:Destroy()
+				else
+					status.Text = "Saved key no longer valid. Enter a new key."
+					status.TextColor3 = Color3.fromRGB(255, 90, 90)
+					button.Text = "UNLOCK"
+					trying = false
+					box.Text = ""
+				end
+			end)
+		end
 	end)
 
 	-- BLOCK the main script until the key is validated
@@ -600,7 +624,15 @@ local function teleportTo(pos)
 	end
 end
 
+local _cachedPlot = nil
+local _cachedPlotAt = 0
 local function getMyGardenPlot()
+	-- Cache the plot for up to 10s to avoid re-scanning every player's
+	-- garden on every automation loop tick (biggest repeated cost in the script).
+	if _cachedPlot and (_cachedPlot.Parent ~= nil) and (tick() - _cachedPlotAt < 10) then
+		return _cachedPlot
+	end
+
 	local gardenFolder = workspace:FindFirstChild("PLAYERS GARDEN")
 	if not gardenFolder then return nil end
 	
@@ -612,6 +644,8 @@ local function getMyGardenPlot()
 		local uid = base:GetAttribute("OwnerUserId")
 		local oname = base:GetAttribute("OwnerName") or base:GetAttribute("Owner")
 		if uid == myUserId or oname == myName then
+			_cachedPlot = base
+			_cachedPlotAt = tick()
 			return base
 		end
 	end
@@ -622,12 +656,16 @@ local function getMyGardenPlot()
 			local uid = child:GetAttribute("OwnerUserId")
 			local oname = child:GetAttribute("OwnerName") or child:GetAttribute("Owner")
 			if uid == myUserId or oname == myName then
+				_cachedPlot = base
+				_cachedPlotAt = tick()
 				return base
 			end
 			-- Check plants inside plot parts
 			if child.Name:lower():find("plot") then
 				for _, model in ipairs(child:GetChildren()) do
 					if model:IsA("Model") and (model:GetAttribute("OwnerUserId") == myUserId or model:GetAttribute("OwnerName") == myName) then
+						_cachedPlot = base
+						_cachedPlotAt = tick()
 						return base
 					end
 				end
