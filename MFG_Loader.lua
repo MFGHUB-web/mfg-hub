@@ -26,8 +26,17 @@ local function loadSavedKey()
 	pcall(function()
 		if readfile and isfile and isfile(AUTH_CONFIG) then
 			local data = HttpService:JSONDecode(readfile(AUTH_CONFIG))
-			if type(data) == "table" and type(data[player.UserId]) == "string" then
-				saved = data[player.UserId]
+			if type(data) == "table" then
+				local uid = tostring(player.UserId)
+				if type(data[uid]) == "string" then
+					saved = data[uid]
+				elseif type(data[player.UserId]) == "string" then
+					saved = data[player.UserId]
+				else
+					for k, v in pairs(data) do
+						if tostring(k) == uid and type(v) == "string" then saved = v end
+					end
+				end
 			end
 		end
 	end)
@@ -71,10 +80,12 @@ if not script or script:gsub("%s", "") == "" or script:gsub("%s", ""):upper() ==
 	return
 end
 
-local ok, err = loadstring(script)
-if not ok then
+local fn, err = loadstring(script)
+if not fn then
 	warn("MFG HUB: script failed to compile: " .. tostring(err))
 	return
 end
 
-ok()
+-- Run the script on its own thread so a slow or busy boot can never wedge
+-- the executor's main thread (the usual cause of "freeze after rejoin").
+task.spawn(fn)
