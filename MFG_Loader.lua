@@ -15,7 +15,7 @@ local player       = Players.LocalPlayer
 local AUTH_CONFIG  = "MFG_HUB_Auth.json"
 
 -- ▼▼ YOUR GOOGLE APPS SCRIPT WEB APP /EXEC URL ▼▼
-local GS_URL = "https://script.google.com/macros/s/AKfycbyrSDew8mAt2PqsxBgYsqtJNcawaQB6RNBjVqjg1viMPtpwHn-HPMfz8ydlpk3CL1x7/exec"
+local GS_URL = "https://script.google.com/macros/s/AKfycbyqDNh2hYIsBAhfaaD3VuusNJMSoV-HfsaPABEoWZp48VUjQoRz7bmoquxPbInzrqCX/exec"
 local DISCORD_LINK = "https://discord.gg/dgagJy6X9V"
 -- ▲▲ EDIT THESE ▲▲
 
