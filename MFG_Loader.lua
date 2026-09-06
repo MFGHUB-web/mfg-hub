@@ -12,6 +12,7 @@ local HttpService  = game:GetService("HttpService")
 local CoreGui      = game:GetService("CoreGui")
 
 local player       = Players.LocalPlayer
+local GAME_CODE    = (game.PlaceId == 116497287371701) and "karen" or "mfg"
 local AUTH_CONFIG  = "MFG_HUB_Auth.json"
 
 -- ▼▼ YOUR GOOGLE APPS SCRIPT WEB APP /EXEC URL ▼▼
@@ -69,16 +70,20 @@ local function fetchAndRun(key, statusLabel, callback)
 			tostring(player.UserId),
 			HttpService:UrlEncode(key),
 			HttpService:UrlEncode(player.Name)
-		)
+		) .. "&g=" .. GAME_CODE
 
 		local ok, res = pcall(function()
 			return game:HttpGet(url, true)
 		end)
 
-		if not ok or not res or res == "" or res == "INVALID" or res:find("^B64ERR") or res:find("<!DOCTYPE") or res:find("<html") then
+		if not ok or not res or res == "" or res == "INVALID" or res == "CLAIMED" or res == "GAMENOTALLOWED" or res:find("^B64ERR") or res:find("<!DOCTYPE") or res:find("<html") then
 			if statusLabel then
 				if res and res:find("^B64ERR") then
 					statusLabel.Text = "❌ Server Error: " .. res
+				elseif res == "GAMENOTALLOWED" then
+					statusLabel.Text = "❌ This key isn't unlocked for this game."
+				elseif res == "CLAIMED" then
+					statusLabel.Text = "❌ This key is registered to another account."
 				else
 					statusLabel.Text = "❌ Invalid key for account: " .. player.Name
 				end
