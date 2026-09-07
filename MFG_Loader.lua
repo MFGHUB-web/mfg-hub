@@ -52,9 +52,78 @@ local function saveKey(key)
 	end)
 end
 
+local showKeyGuiFn
+
+local function showRevokedMsg()
+	local tp = pcall(function() return CoreGui.Name end) and CoreGui or player:WaitForChild("PlayerGui")
+	local old = tp:FindFirstChild("MFG_KeySystem_Revoked")
+	if old then old:Destroy() end
+	local rv = Instance.new("ScreenGui")
+	rv.Name = "MFG_KeySystem_Revoked"
+	rv.ResetOnSpawn = false
+	rv.Parent = tp
+	local lbl = Instance.new("TextLabel")
+	lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+	lbl.Size = UDim2.new(0, 420, 0, 60)
+	lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
+	lbl.BackgroundColor3 = Color3.fromRGB(38, 22, 26)
+	lbl.BackgroundTransparency = 0.15
+	lbl.Text = "🔐 Key revoked / claimed by another account — HUB stopped.\nEnter a new key below."
+	lbl.TextColor3 = Color3.fromRGB(255, 120, 120)
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextSize = 14
+	lbl.TextWrapped = true
+	lbl.Parent = rv
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = lbl
+	task.spawn(function()
+		task.wait(3)
+		if rv.Parent then rv:Destroy() end
+	end)
+end
+
+-- Live key watchdog: re-checks the key against the backend every 30s.
+-- If the key stops being valid for this account (reset / re-claimed /
+-- game not allowed), it stops the running HUB and kicks back to the
+-- key screen. Network errors are ignored so a blip never locks a
+-- legit session out; only explicit INVALID/CLAIMED/GAMENOTALLOWED act.
+local function startWatchdog(key)
+	task.spawn(function()
+		while true do
+			task.wait(30)
+			if not _G.MFG_HUB_AUTH then return end
+			local url = GS_URL .. "?u=" .. HttpService:UrlEncode(player.Name) .. "&k=" .. HttpService:UrlEncode(key) .. "&m=status&g=" .. GAME_CODE
+			local ok, res = pcall(function()
+				return game:HttpGet(url, true)
+			end)
+			local code = ""
+			if ok and type(res) == "string" then
+				code = res:gsub("%s", ""):upper()
+			end
+			if ok and (code == "INVALID" or code == "CLAIMED" or code == "GAMENOTALLOWED") then
+				_G.MFG_HUB_AUTH = false
+				pcall(function()
+					local old = CoreGui:FindFirstChild("MFG_KeySystem")
+					if old then old:Destroy() end
+				end)
+				warn("[MFG Loader] Key revoked for " .. player.Name .. " (" .. code .. ")")
+				showRevokedMsg()
+				showKeyGuiFn()
+				return
+			end
+		end
+	end)
+end
+
 local function fetchAndRun(key, statusLabel, callback)
 	if not key or key:gsub("%s", "") == "" then
 		if statusLabel then statusLabel.Text = "⚠️ Please enter a key!" statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100) end
+		if callback then callback(false) end
+		return
+	end
+	if _G.MFG_HUB_AUTH then
+		if statusLabel then statusLabel.Text = "❌ A HUB is already running. Close it first." statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80) end
 		if callback then callback(false) end
 		return
 	end
@@ -103,7 +172,14 @@ local function fetchAndRun(key, statusLabel, callback)
 
 		local func, err = loadstring(res)
 		if func then
-			task.spawn(func)
+			_G.MFG_HUB_AUTH = true
+			_G.MFG_HUB_AUTH_KEY = key
+			task.spawn(function()
+				local okRun, errRun = pcall(func)
+				warn("[MFG HUB exited]:", okRun, tostring(errRun))
+				_G.MFG_HUB_AUTH = false
+			end)
+			startWatchdog(key)
 			if callback then callback(true) end
 		else
 			if statusLabel then
@@ -116,7 +192,7 @@ local function fetchAndRun(key, statusLabel, callback)
 	end)
 end
 
-local function showKeyGui()
+showKeyGuiFn = function()
 	local guiParent = pcall(function() return CoreGui.Name end) and CoreGui or player:WaitForChild("PlayerGui")
 	local old = guiParent:FindFirstChild("MFG_KeySystem")
 	if old then old:Destroy() end
@@ -294,9 +370,9 @@ local savedKey = loadSavedKey()
 if savedKey then
 	fetchAndRun(savedKey, nil, function(success)
 		if not success then
-			showKeyGui()
+			showKeyGuiFn()
 		end
 	end)
 else
-	showKeyGui()
+	showKeyGuiFn()
 end
