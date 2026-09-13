@@ -139,7 +139,23 @@ local function startWatchdog(key)
 				end)
 				warn("[MFG Loader] Key revoked for " .. player.Name .. " (" .. code .. ")")
 				showRevokedMsg()
-				showKeyGuiFn()
+local savedKey = loadSavedKey()
+
+local function debugLog(msg)
+	pcall(function()
+		if writefile and isfile then
+			local prev = ""
+			if isfile("MFG_Loader_debug.log") then
+				pcall(function() prev = readfile("MFG_Loader_debug.log") end)
+			end
+			writefile("MFG_Loader_debug.log", prev .. "\n[" .. tostring(os.clock()) .. "] " .. tostring(msg))
+		end
+	end)
+end
+
+debugLog("loader started; savedKey=" .. tostring(savedKey ~= nil) .. " game=" .. tostring(game.PlaceId))
+
+showKeyGuiFn()
 				return
 			end
 		end
@@ -203,11 +219,13 @@ local function fetchAndRun(key, statusLabel, callback)
 			HttpService:UrlEncode(player.Name)
 		)
 
+		debugLog("warming up " .. GAME_CODE .. " key=" .. tostring(key) .. " user=" .. tostring(player.Name))
 		-- Step 1: warm the Apps Script deployment with the tiny status call.
 		-- The first /exec hit after idle spins up the service (16s cold-start,
 		-- 302 redirect handshake); the small payload warms it so the big
 		-- m=script fetch that follows succeeds instead of timing out.
 		local statusRes = fetchWithRetry(statusUrl, statusLabel, "Warming up key server...", 5)
+		debugLog("status result=" .. tostring(statusRes and statusRes:sub(1, 30)))
 		if statusRes == "" or isTransientFailure(true, statusRes) then
 			if statusLabel then
 				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
@@ -243,6 +261,7 @@ local function fetchAndRun(key, statusLabel, callback)
 
 		-- Step 2: deployment is warm now; fetch the script.
 		local res = fetchWithRetry(scriptUrl, statusLabel, "Verifying key with server...", 4)
+		debugLog("script result len=" .. tostring(#res) .. " head=" .. tostring(res:sub(1, 30)))
 		if res == "" or isTransientFailure(true, res) then
 			if statusLabel then
 				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
@@ -297,6 +316,7 @@ local function fetchAndRun(key, statusLabel, callback)
 		task.wait(0.5)
 
 		local func, err = loadstring(res)
+		debugLog("loadstring ok=" .. tostring(func ~= nil) .. " err=" .. tostring(err))
 		if func then
 			_G.MFG_HUB_AUTH = true
 			_G.MFG_HUB_AUTH_KEY = key
@@ -318,7 +338,7 @@ local function fetchAndRun(key, statusLabel, callback)
 	end)
 end
 
-showKeyGuiFn = function()
+showKeyScreen = function()
 	local guiParent = pcall(function() return CoreGui.Name end) and CoreGui or player:WaitForChild("PlayerGui")
 	local old = guiParent:FindFirstChild("MFG_KeySystem")
 	if old then old:Destroy() end
@@ -490,15 +510,22 @@ showKeyGuiFn = function()
 	box.FocusLost:Connect(function(enter)
 		if enter then onSubmit() end
 	end)
+
+	return { screen = sg, box = box, submitFn = onSubmit }
 end
 
-local savedKey = loadSavedKey()
-if savedKey then
-	fetchAndRun(savedKey, nil, function(success)
-		if not success then
-			showKeyGuiFn()
-		end
-	end)
-else
-	showKeyGuiFn()
+showKeyGuiFn = function()
+	local sg = showKeyScreen()
+	if not sg then return end
+	local savedKey = loadSavedKey()
+	if savedKey then
+		sg.box.Text = savedKey
+		task.delay(1, function()
+			if sg.screen and sg.screen.Parent then
+				sg.submitFn()
+			end
+		end)
+	end
 end
+
+showKeyGuiFn()
