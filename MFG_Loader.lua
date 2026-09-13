@@ -343,6 +343,7 @@ local function fetchAndRun(key, statusLabel, callback)
 		local nSlices = tonumber(countRes)
 		local assembled = ""
 		local sliceOk = false
+		local startTime = os.clock()
 		if nSlices and nSlices > 0 and nSlices <= 64 then
 			sliceOk = true
 			local parts = {}
@@ -350,25 +351,34 @@ local function fetchAndRun(key, statusLabel, callback)
 				parts[i + 1] = ""
 			end
 			local pending = nSlices
-			local done = false
-			while not done and pending > 0 do
-				done = true
-				for i = 0, nSlices - 1 do
-					if parts[i + 1] == "" then
-						local sUrl = GS_URL .. "?" .. baseParams .. "&m=slice&n=" .. i .. cb
-						local piece = fetchWithRetry(sUrl, statusLabel, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 3)
+			-- Fetch ALL slices in PARALLEL: one spawned thread per slice,
+			-- each retrying its own URL independently until it either
+			-- assembles a good piece or total time runs out.  This is what
+			-- serial fetching cannot do on slow executors — 10 slices at up
+			-- to 35s + 3 retries each adds minutes of fake "stuck" time.
+			local fetched = {}
+			for i = 0, nSlices - 1 do
+				fetched[i + 1] = false
+				task.spawn(function()
+					local sUrl = GS_URL .. "?" .. baseParams .. "&m=slice&n=" .. i .. cb
+					while not fetched[i + 1] and os.clock() - startTime < 90 do
+						local piece = fetchWithRetry(sUrl, statusLabel, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 2)
 						if type(piece) == "string" and #piece > 0 and not piece:find("B64ERR") and not piece:find("INVALID") then
 							parts[i + 1] = piece
 							pending = pending - 1
-						else
-							done = false
+						end
+						fetched[i + 1] = (parts[i + 1] ~= "")
+						if not fetched[i + 1] then
 							task.wait(1)
 						end
 					end
-				end
+				end)
+			end
+			while pending > 0 and os.clock() - startTime < 95 do
+				task.wait(0.5)
 			end
 			assembled = table.concat(parts)
-			debugLog("slices=" .. tostring(nSlices) .. " assembled len=" .. tostring(#assembled))
+			debugLog("slices=" .. tostring(nSlices) .. " assembled len=" .. tostring(#assembled) .. " secs=" .. tostring(math.floor(os.clock() - startTime)))
 		end
 		if sliceOk and assembled:find(SENTINEL) and #assembled > 2000 then
 			if statusLabel then
