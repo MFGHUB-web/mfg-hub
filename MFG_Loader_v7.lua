@@ -193,31 +193,46 @@ end
 local function fetchOnce(url)
 	-- request() with a 30s timeout follows the 302 redirect and waits long
 	-- enough for the ~16s Apps Script cold boot to finish in ONE attempt.
-	-- RACE BOTH fetch paths via task.spawn so a hung request() can NEVER
-	-- stall the loader: whatever returns FIRST wins.
-	local requestDone, httpDone = false, false
+	-- RACE BOTH fetch paths in SEPARATE SPAWNED THREADS so a hung
+	-- request() OR hung game:HttpGet can NEVER stall the loader.  The
+	-- caller only waits (yields; UI keeps painting) for whichever returns
+	-- first, up to a hard 35s wall-clock cap, then gives up.
 	local requestRes, httpRes = "", ""
-	local first = ""
+	local start = os.clock()
+	local function pickBody(raw)
+		if type(raw) == "string" and #raw > 0 and not raw:find("<!DOCTYPE") and not raw:find("<html") then
+			return raw
+		end
+		return ""
+	end
 	task.spawn(function()
 		pcall(function()
-			if request then
-				local r = request({ Url = url, Method = "GET", Timeout = 30 })
-				if type(r) == "table" and type(r.Body) == "string" and #r.Body > 0 then
-					requestRes = r.Body
+			local fn = request or syn_request or http_request
+			if not fn and syn then fn = syn.request end
+			if not fn and http then fn = http.request end
+			if fn then
+				local r = fn({ Url = url, Method = "GET", Timeout = 25 })
+				if type(r) == "table" then
+					requestRes = pickBody(r.Body)
 				end
 			end
 		end)
-		requestDone = true
 	end)
-	pcall(function()
-		if game.HttpGet then
-			httpRes = game:HttpGet(url, true) or ""
-		end
+	task.spawn(function()
+		pcall(function()
+			if game.HttpGet then
+				httpRes = pickBody(game:HttpGet(url, true))
+			end
+		end)
 	end)
-	httpDone = true
-	if requestRes ~= "" and not requestRes:find("<!DOCTYPE") then first = requestRes end
-	if httpRes ~= "" and not httpRes:find("<!DOCTYPE") then first = first == "" and httpRes or first end
-	return first
+	while os.clock() - start < 35 do
+		if requestRes ~= "" then return requestRes end
+		if httpRes ~= "" then return httpRes end
+		task.wait(0.15)
+	end
+	if requestRes ~= "" then return requestRes end
+	if httpRes ~= "" then return httpRes end
+	return ""
 end
 
 local function fetchWithRetry(url, statusLabel, label, maxAttempts)
