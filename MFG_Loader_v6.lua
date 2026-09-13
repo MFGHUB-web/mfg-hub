@@ -76,6 +76,20 @@ local function saveKey(key)
 	end)
 end
 
+local function debugLog(msg)
+	pcall(function()
+		if writefile and isfile then
+			local prev = ""
+			if isfile("MFG_Loader_v6.log") then
+				pcall(function() prev = readfile("MFG_Loader_v6.log") end)
+			end
+			writefile("MFG_Loader_v6.log", prev .. "\n[" .. tostring(os.clock()) .. "] " .. tostring(msg))
+		end
+	end)
+end
+
+debugLog("loader v6 started; game=" .. tostring(game.PlaceId))
+
 -- Normalise a backend reply: strip whitespace and keep only a verdict token.
 local function verdictOf(res)
 	if type(res) ~= "string" then return "" end
@@ -155,23 +169,6 @@ local function startWatchdog(key)
 				end)
 				warn("[MFG Loader] Key revoked for " .. player.Name .. " (" .. code .. ")")
 				showRevokedMsg()
-local savedKey = loadSavedKey()
-
-local function debugLog(msg)
-	pcall(function()
-		if writefile and isfile then
-			local prev = ""
-			if isfile("MFG_Loader_v6.log") then
-				pcall(function() prev = readfile("MFG_Loader_v6.log") end)
-			end
-			writefile("MFG_Loader_v6.log", prev .. "\n[" .. tostring(os.clock()) .. "] " .. tostring(msg))
-		end
-	end)
-end
-
-debugLog("loader v6 started; savedKey=" .. tostring(savedKey ~= nil) .. " game=" .. tostring(game.PlaceId))
-
-showKeyGuiFn()
 				return
 			end
 		end
@@ -189,25 +186,31 @@ end
 local function fetchOnce(url)
 	-- request() with a 30s timeout follows the 302 redirect and waits long
 	-- enough for the ~16s Apps Script cold boot to finish in ONE attempt.
-	local done = false
-	local res = ""
-	pcall(function()
-		if request then
-			local r = request({ Url = url, Method = "GET", Timeout = 30 })
-			if type(r) == "table" and type(r.Body) == "string" and #r.Body > 0 then
-				res = r.Body
-				done = true
+	-- RACE BOTH fetch paths via task.spawn so a hung request() can NEVER
+	-- stall the loader: whatever returns FIRST wins.
+	local requestDone, httpDone = false, false
+	local requestRes, httpRes = "", ""
+	local first = ""
+	task.spawn(function()
+		pcall(function()
+			if request then
+				local r = request({ Url = url, Method = "GET", Timeout = 30 })
+				if type(r) == "table" and type(r.Body) == "string" and #r.Body > 0 then
+					requestRes = r.Body
+				end
 			end
-		end
+		end)
+		requestDone = true
 	end)
-	if done then return res end
 	pcall(function()
 		if game.HttpGet then
-			res = game:HttpGet(url, true) or ""
-			done = true
+			httpRes = game:HttpGet(url, true) or ""
 		end
 	end)
-	return res
+	httpDone = true
+	if requestRes ~= "" and not requestRes:find("<!DOCTYPE") then first = requestRes end
+	if httpRes ~= "" and not httpRes:find("<!DOCTYPE") then first = first == "" and httpRes or first end
+	return first
 end
 
 local function fetchWithRetry(url, statusLabel, label, maxAttempts)
