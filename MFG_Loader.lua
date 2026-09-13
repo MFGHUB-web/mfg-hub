@@ -368,7 +368,7 @@ local function fetchAndRun(key, statusLabel, callback)
 		end
 
 		local function trySendFast()
-			local res = fetchWithRetry(scriptUrl, statusLabel, "Loading script...", 1, 20)
+			local res = fetchWithRetry(scriptUrl, statusLabel, "Loading script...", 2, 20)
 			debugLog("fast body len=" .. tostring(#res) .. " head=" .. tostring(res:sub(1, 30)))
 			if type(res) ~= "string" or #res < 2000 or not res:find(SENTINEL) then
 				return false
@@ -432,6 +432,28 @@ local function fetchAndRun(key, statusLabel, callback)
 					statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
 				end
 				task.wait(0.25)
+			end
+			-- SERIAL MOP-UP: parallel bursts get Google-throttled, so if any
+			-- slice is still missing (the 8/9 stuck), fetch just the gaps ONE
+			-- AT A TIME with generous retries — no concurrency → no throttle.
+			for i = 0, nSlices - 1 do
+				if parts[i + 1] == "" then
+					local got = 0
+					for j = 1, nSlices do
+						if parts[j] ~= "" then got = got + 1 end
+					end
+					if statusLabel then
+						statusLabel.Text = "⏳ Fetching missing piece (" .. (i + 1) .. "/" .. nSlices .. ")..."
+						statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+					end
+					local sUrl = GS_URL .. "?" .. baseParams .. "&m=slice&n=" .. i .. cb
+					local piece = fetchWithRetry(sUrl, nil, "Fetching missing piece " .. (i + 1) .. "/" .. nSlices .. "...", 5, 10)
+					if type(piece) == "string" and #piece > 0 and not piece:find("B64ERR") and not piece:find("INVALID") then
+						parts[i + 1] = piece
+						pending = pending - 1
+						debugLog("mopup slice " .. i .. " len=" .. tostring(#piece))
+					end
+				end
 			end
 			assembled = table.concat(parts)
 			debugLog("slices=" .. tostring(nSlices) .. " assembled len=" .. tostring(#assembled) .. " secs=" .. tostring(math.floor(os.clock() - startTime)))
