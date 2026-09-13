@@ -153,7 +153,7 @@ local function debugLog(msg)
 	end)
 end
 
-debugLog("loader started; savedKey=" .. tostring(savedKey ~= nil) .. " game=" .. tostring(game.PlaceId))
+debugLog("loader v1.5 started; savedKey=" .. tostring(savedKey ~= nil) .. " game=" .. tostring(game.PlaceId))
 
 showKeyGuiFn()
 				return
