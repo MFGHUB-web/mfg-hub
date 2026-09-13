@@ -197,13 +197,14 @@ end
 -- attempt absorbs the whole cold start, then retry quickly at a flat 1s
 -- backoff.  Only an explicit verdict fails for real, so a transient
 -- cold-start blip no longer shows up as "Invalid key".
-local function fetchOnce(url)
+local function fetchOnce(url, maxSec)
+	maxSec = maxSec or 35
 	-- request() with a 30s timeout follows the 302 redirect and waits long
 	-- enough for the ~16s Apps Script cold boot to finish in ONE attempt.
 	-- RACE BOTH fetch paths in SEPARATE SPAWNED THREADS so a hung
 	-- request() OR hung game:HttpGet can NEVER stall the loader.  The
 	-- caller only waits (yields; UI keeps painting) for whichever returns
-	-- first, up to a hard 35s wall-clock cap, then gives up.
+	-- first, up to a hard wall-clock cap, then gives up.
 	local requestRes, httpRes = "", ""
 	local start = os.clock()
 	local function pickBody(raw)
@@ -218,7 +219,7 @@ local function fetchOnce(url)
 			if not fn and syn then fn = syn.request end
 			if not fn and http then fn = http.request end
 			if fn then
-				local r = fn({ Url = url, Method = "GET", Timeout = 25 })
+				local r = fn({ Url = url, Method = "GET", Timeout = math.min(25, maxSec) })
 				if type(r) == "table" then
 					requestRes = pickBody(r.Body)
 				end
@@ -232,7 +233,7 @@ local function fetchOnce(url)
 			end
 		end)
 	end)
-	while os.clock() - start < 35 do
+	while os.clock() - start < maxSec do
 		if requestRes ~= "" then return requestRes end
 		if httpRes ~= "" then return httpRes end
 		task.wait(0.15)
@@ -242,9 +243,10 @@ local function fetchOnce(url)
 	return ""
 end
 
-local function fetchWithRetry(url, statusLabel, label, maxAttempts)
+local function fetchWithRetry(url, statusLabel, label, maxAttempts, maxSec)
 	local attempt = 0
 	local lastReply = ""
+	maxSec = maxSec or 35
 	while attempt < maxAttempts do
 		attempt = attempt + 1
 		if statusLabel then
@@ -252,7 +254,7 @@ local function fetchWithRetry(url, statusLabel, label, maxAttempts)
 			statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
 		end
 		local ok, res = pcall(function()
-			return fetchOnce(url)
+			return fetchOnce(url, maxSec)
 		end)
 		if ok and type(res) == "string" then
 			lastReply = res
@@ -361,8 +363,13 @@ local function fetchAndRun(key, statusLabel, callback)
 				fetched[i + 1] = false
 				task.spawn(function()
 					local sUrl = GS_URL .. "?" .. baseParams .. "&m=slice&n=" .. i .. cb
-					while not fetched[i + 1] and os.clock() - startTime < 90 do
-						local piece = fetchWithRetry(sUrl, statusLabel, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 2)
+					-- The deployment is already WARM (status call above ran
+					-- through the 302 handshake), so each slice only needs a
+					-- short ~12s window — not the 35s cold-start budget.  A
+					-- short timeout turns a dead slice into a quick re-loop
+					-- instead of a 2-minute fake-hang.
+					while not fetched[i + 1] and os.clock() - startTime < 60 do
+						local piece = fetchWithRetry(sUrl, nil, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 2, 12)
 						if type(piece) == "string" and #piece > 0 and not piece:find("B64ERR") and not piece:find("INVALID") then
 							parts[i + 1] = piece
 							pending = pending - 1
@@ -374,8 +381,19 @@ local function fetchAndRun(key, statusLabel, callback)
 					end
 				end)
 			end
-			while pending > 0 and os.clock() - startTime < 95 do
-				task.wait(0.5)
+			-- Monotonic progress: count how many slices have arrived and
+			-- show "Fetched X/N..." so numbers only ever go UP (9/9 then 1/9
+			-- was just parallel threads fighting over the same label).
+			while pending > 0 and os.clock() - startTime < 65 do
+				local got = 0
+				for j = 1, nSlices do
+					if parts[j] ~= "" then got = got + 1 end
+				end
+				if statusLabel then
+					statusLabel.Text = "⏳ Fetching script (" .. got .. "/" .. nSlices .. ")..."
+					statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+				end
+				task.wait(0.25)
 			end
 			assembled = table.concat(parts)
 			debugLog("slices=" .. tostring(nSlices) .. " assembled len=" .. tostring(#assembled) .. " secs=" .. tostring(math.floor(os.clock() - startTime)))
