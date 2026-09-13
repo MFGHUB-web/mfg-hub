@@ -47,7 +47,7 @@ local SENTINEL     = "plantSubmitOnlyForced"
 warn("[" .. VER_MARKER .. "] loader executing on " .. player.Name .. " place=" .. tostring(game.PlaceId))
 
 -- ▼▼ YOUR GOOGLE APPS SCRIPT WEB APP /EXEC URL ▼▼
-local GS_URL = "https://script.google.com/macros/s/AKfycbyqDNh2hYIsBAhfaaD3VuusNJMSoV-HfsaPABEoWZp48VUjQoRz7bmoquxPbInzrqCX/exec"
+local GS_URL = "https://script.google.com/macros/s/AKfycbxwtSYdywKTBtd17fhZCeXFUTWW1uFtuSc51RKgfJSehUGewrlF7Lf3Pf70H_ga6kvc/exec"
 local DISCORD_LINK = "https://discord.gg/dgagJy6X9V"
 -- ▲▲ EDIT THESE ▲▲
 
