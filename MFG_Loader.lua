@@ -165,12 +165,38 @@ end
 -- Fetch the script from the backend with cold-start retries.
 -- Google Apps Script redirects the first /exec hit to a script.google-
 --usercontent.com echo URL; while the deployment spins up that handshake
--- can time out or return an empty/HTML body.  We retry a few times and
--- only give up on a real verdict, so a transient cold-start blip no
--- longer shows up as "Invalid key".
+-- can time out or return an empty/HTML body (first hit after idle takes
+-- ~16s to boot).  We try a long-timeout request() call FIRST so a single
+-- attempt absorbs the whole cold start, then retry quickly at a flat 1s
+-- backoff.  Only an explicit verdict fails for real, so a transient
+-- cold-start blip no longer shows up as "Invalid key".
+local function fetchOnce(url)
+	-- request() with a 30s timeout follows the 302 redirect and waits long
+	-- enough for the ~16s Apps Script cold boot to finish in ONE attempt.
+	local done = false
+	local res = ""
+	pcall(function()
+		if request then
+			local r = request({ Url = url, Method = "GET", Timeout = 30 })
+			if type(r) == "table" and type(r.Body) == "string" and #r.Body > 0 then
+				res = r.Body
+				done = true
+			end
+		end
+	end)
+	if done then return res end
+	pcall(function()
+		if game.HttpGet then
+			res = game:HttpGet(url, true) or ""
+			done = true
+		end
+	end)
+	return res
+end
+
 local function fetchWithRetry(url, statusLabel, label, maxAttempts)
 	local attempt = 0
-	local lastReply = nil
+	local lastReply = ""
 	while attempt < maxAttempts do
 		attempt = attempt + 1
 		if statusLabel then
@@ -178,7 +204,7 @@ local function fetchWithRetry(url, statusLabel, label, maxAttempts)
 			statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
 		end
 		local ok, res = pcall(function()
-			return game:HttpGet(url, true)
+			return fetchOnce(url)
 		end)
 		if ok and type(res) == "string" then
 			lastReply = res
@@ -189,9 +215,9 @@ local function fetchWithRetry(url, statusLabel, label, maxAttempts)
 				return res
 			end
 		end
-		task.wait(1.5 * attempt)
+		task.wait(1)
 	end
-	return lastReply or ""
+	return lastReply
 end
 
 local function fetchAndRun(key, statusLabel, callback)
