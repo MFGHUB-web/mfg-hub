@@ -337,10 +337,54 @@ local function fetchAndRun(key, statusLabel, callback)
 			return
 		end
 
+		-- Step 2: deliver the script.  FAST PATH FIRST = single body, so
+		-- executors that can handle a big response load INSTANTLY off one
+		-- request (which is exactly the "old behaviour" the checker wants
+		-- back).  Only executors that drop the large body (empty reply)
+		-- fall through to the parallel-slice path.
+		local function runScript(src)
+			if statusLabel then
+				statusLabel.Text = "✅ Key verified! Loading MFG HUB..."
+				statusLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
+			end
+			saveKey(key)
+			task.wait(0.5)
+			local func, err = loadstring(src)
+			debugLog("loadstring ok=" .. tostring(func ~= nil) .. " err=" .. tostring(err))
+			if func then
+				_G.MFG_HUB_AUTH = true
+				_G.MFG_HUB_AUTH_KEY = key
+				task.spawn(function()
+					local okRun, errRun = pcall(func)
+					warn("[MFG HUB exited]:", okRun, tostring(errRun))
+					_G.MFG_HUB_AUTH = false
+				end)
+				startWatchdog(key)
+				if callback then callback(true) end
+			else
+				if statusLabel then statusLabel.Text = "❌ Script error in backend response! " .. tostring(err) statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80) end
+				if callback then callback(false) end
+			end
+		end
+
+		local function trySendFast()
+			local res = fetchWithRetry(scriptUrl, statusLabel, "Loading script...", 1, 20)
+			debugLog("fast body len=" .. tostring(#res) .. " head=" .. tostring(res:sub(1, 30)))
+			if type(res) ~= "string" or #res < 2000 or not res:find(SENTINEL) then
+				return false
+			end
+			runScript(res)
+			return true
+		end
+
+		if trySendFast() then
+			return
+		end
+
 		-- Step 2a: try SLICE delivery (small responses the executor can
 		-- actually finish). Each slice is decoded plain-text source.
 		local loadUrl = GS_URL .. "?" .. baseParams .. "&m=loadcount" .. cb
-		local countRes = fetchWithRetry(loadUrl, statusLabel, "Reading script size...", 3)
+		local countRes = fetchWithRetry(loadUrl, statusLabel, "Reading script size...", 2, 12)
 		debugLog("loadcount result=" .. tostring(countRes))
 		local nSlices = tonumber(countRes)
 		local assembled = ""
@@ -355,36 +399,30 @@ local function fetchAndRun(key, statusLabel, callback)
 			local pending = nSlices
 			-- Fetch ALL slices in PARALLEL: one spawned thread per slice,
 			-- each retrying its own URL independently until it either
-			-- assembles a good piece or total time runs out.  This is what
-			-- serial fetching cannot do on slow executors — 10 slices at up
-			-- to 35s + 3 retries each adds minutes of fake "stuck" time.
+			-- assembles a good piece or the TOTAL time cap hits.  A single
+			-- stuck slice must NEVER let the whole download hang for a
+			-- minute — the hard cap below bails it out fast.
 			local fetched = {}
 			for i = 0, nSlices - 1 do
 				fetched[i + 1] = false
 				task.spawn(function()
 					local sUrl = GS_URL .. "?" .. baseParams .. "&m=slice&n=" .. i .. cb
-					-- The deployment is already WARM (status call above ran
-					-- through the 302 handshake), so each slice only needs a
-					-- short ~12s window — not the 35s cold-start budget.  A
-					-- short timeout turns a dead slice into a quick re-loop
-					-- instead of a 2-minute fake-hang.
-					while not fetched[i + 1] and os.clock() - startTime < 60 do
-						local piece = fetchWithRetry(sUrl, nil, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 2, 12)
+					while not fetched[i + 1] and os.clock() - startTime < 18 do
+						local piece = fetchWithRetry(sUrl, nil, "Fetching script " .. (i + 1) .. "/" .. nSlices .. "...", 2, 8)
 						if type(piece) == "string" and #piece > 0 and not piece:find("B64ERR") and not piece:find("INVALID") then
 							parts[i + 1] = piece
 							pending = pending - 1
 						end
 						fetched[i + 1] = (parts[i + 1] ~= "")
 						if not fetched[i + 1] then
-							task.wait(1)
+							task.wait(0.4)
 						end
 					end
 				end)
 			end
 			-- Monotonic progress: count how many slices have arrived and
-			-- show "Fetched X/N..." so numbers only ever go UP (9/9 then 1/9
-			-- was just parallel threads fighting over the same label).
-			while pending > 0 and os.clock() - startTime < 65 do
+			-- show "Fetched X/N..." so numbers only ever go UP.
+			while pending > 0 and os.clock() - startTime < 20 do
 				local got = 0
 				for j = 1, nSlices do
 					if parts[j] ~= "" then got = got + 1 end
@@ -399,117 +437,26 @@ local function fetchAndRun(key, statusLabel, callback)
 			debugLog("slices=" .. tostring(nSlices) .. " assembled len=" .. tostring(#assembled) .. " secs=" .. tostring(math.floor(os.clock() - startTime)))
 		end
 		if sliceOk and assembled:find(SENTINEL) and #assembled > 2000 then
-			if statusLabel then
-				statusLabel.Text = "✅ Key verified! Loading MFG HUB..."
-				statusLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
-			end
-			saveKey(key)
-			task.wait(0.5)
-			local func, err = loadstring(assembled)
-			debugLog("loadstring ok=" .. tostring(func ~= nil) .. " err=" .. tostring(err))
-			if func then
-				_G.MFG_HUB_AUTH = true
-				_G.MFG_HUB_AUTH_KEY = key
-				task.spawn(function()
-					local okRun, errRun = pcall(func)
-					warn("[MFG HUB exited]:", okRun, tostring(errRun))
-					_G.MFG_HUB_AUTH = false
-				end)
-				startWatchdog(key)
-				if callback then callback(true) end
-			else
-				if statusLabel then statusLabel.Text = "❌ Script error in backend slices! " .. tostring(err) statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80) end
-				if callback then callback(false) end
-			end
+			runScript(assembled)
 			return
 		end
 
-		-- Step 2b: fall back to the single-body fetch.
+		-- Step 2b: final fall back to the single-body fetch with more retries
+		-- (the fast path above tried once; slices may have missed the sentinel
+		-- because one slice was torn — the full body is the last resort).
 		if statusLabel then statusLabel.Text = "⏳ Loading script..." statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80) end
-		local res = fetchWithRetry(scriptUrl, statusLabel, "Loading script...", 4)
-		debugLog("script result len=" .. tostring(#res) .. " head=" .. tostring(res:sub(1, 30)))
-		if type(res) ~= "string" or not res:find(SENTINEL) then
-			if statusLabel then
-				statusLabel.Text = "❌ Backend script content is wrong/outdated (missing v7 marker). Re-sync the sheet chunks."
-				statusLabel.TextColor3 = Color3.fromRGB(255, 120, 80)
-			end
-			debugLog("SENTINEL MISS (single body): len=" .. tostring(type(res) == "string" and #res or -1))
-			if callback then callback(false) end
+		local res2 = fetchWithRetry(scriptUrl, statusLabel, "Loading script...", 4, 20)
+		debugLog("final body len=" .. tostring(#res2) .. " head=" .. tostring(res2:sub(1, 30)))
+		if type(res2) == "string" and #res2 > 2000 and res2:find(SENTINEL) then
+			runScript(res2)
 			return
 		end
-		if res == "" or isTransientFailure(true, res) then
-			if statusLabel then
-				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
-				statusLabel.TextColor3 = Color3.fromRGB(255, 120, 80)
-			end
-			if callback then callback(false) end
-			return
-		end
-
-		if res == "INVALID" then
-			if statusLabel then
-				statusLabel.Text = "❌ Invalid key for account: " .. player.Name
-				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-			end
-			if callback then callback(false) end
-			return
-		end
-
-		if res == "GAMENOTALLOWED" then
-			if statusLabel then
-				statusLabel.Text = "❌ This key isn't unlocked for this game."
-				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-			end
-			if callback then callback(false) end
-			return
-		end
-
-		if res == "CLAIMED" then
-			if statusLabel then
-				statusLabel.Text = "❌ This key is registered to another account."
-				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-			end
-			if callback then callback(false) end
-			return
-		end
-
-		if res:lower():find("^b64err") then
-			if statusLabel then
-				statusLabel.Text = "❌ Server Error: " .. res
-				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-			end
-			if callback then callback(false) end
-			return
-		end
-
 		if statusLabel then
-			statusLabel.Text = "✅ Key verified! Loading MFG HUB..."
-			statusLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
+			statusLabel.Text = "❌ Backend script content is wrong/outdated (missing v7 marker). Re-sync the sheet chunks."
+			statusLabel.TextColor3 = Color3.fromRGB(255, 120, 80)
 		end
-
-		saveKey(key)
-		task.wait(0.5)
-
-		local func, err = loadstring(res)
-		debugLog("loadstring ok=" .. tostring(func ~= nil) .. " err=" .. tostring(err))
-		if func then
-			_G.MFG_HUB_AUTH = true
-			_G.MFG_HUB_AUTH_KEY = key
-			task.spawn(function()
-				local okRun, errRun = pcall(func)
-				warn("[MFG HUB exited]:", okRun, tostring(errRun))
-				_G.MFG_HUB_AUTH = false
-			end)
-			startWatchdog(key)
-			if callback then callback(true) end
-		else
-			if statusLabel then
-				statusLabel.Text = "❌ Script error in backend response!"
-				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-			end
-			warn("[MFG Loader Error]:", err)
-			if callback then callback(false) end
-		end
+		debugLog("SENTINEL MISS (final body): len=" .. tostring(type(res2) == "string" and #res2 or -1))
+		if callback then callback(false) end
 	end)
 end
 
