@@ -14,6 +14,13 @@
 --  error) with backoff.  Only an EXPLICIT
 --  INVALID/CLAIMED/GAMENOTALLOWED/B64ERR verdict is definitive.
 --
+--  v8 (new filename = force fresh download from GitHub raw): mobile
+--  executors (Delta on mobile) hard-cache raw.githubusercontent.com
+--  and often ignore the HttpGet no-cache flag, so buyers kept running
+--  the OLD synchronous-HttpGet loader that froze on "Verifying key
+--  with server...".  A brand-new filename forces every executor to
+--  fetch THIS build.  Same code as v7's raced-fetch fix.
+--
 --  v7 (slice delivery): solves the REAL blocker — the executor's
 --  HTTP layer returns EMPTY on the single large script body (~327KB).
 --  Now the loader fetches the script as small DECODED-TEXT SLICES
@@ -41,7 +48,7 @@ local CoreGui      = game:GetService("CoreGui")
 local player       = Players.LocalPlayer
 local GAME_CODE    = (game.PlaceId == 116497287371701) and "karen" or "mfg"
 local AUTH_CONFIG  = "MFG_HUB_Auth.json"
-local VER_MARKER   = "MFG-LOADER-V7"
+local VER_MARKER   = "MFG-LOADER-V8"
 local SENTINEL     = "plantSubmitOnlyForced"
 
 warn("[" .. VER_MARKER .. "] loader executing on " .. player.Name .. " place=" .. tostring(game.PlaceId))
@@ -87,15 +94,15 @@ local function debugLog(msg)
 	pcall(function()
 		if writefile and isfile then
 			local prev = ""
-			if isfile("MFG_Loader_v7.log") then
-				pcall(function() prev = readfile("MFG_Loader_v7.log") end)
+			if isfile("MFG_Loader_v8.log") then
+				pcall(function() prev = readfile("MFG_Loader_v8.log") end)
 			end
-			writefile("MFG_Loader_v7.log", prev .. "\n[" .. tostring(os.clock()) .. "] " .. tostring(msg))
+			writefile("MFG_Loader_v8.log", prev .. "\n[" .. tostring(os.clock()) .. "] " .. tostring(msg))
 		end
 	end)
 end
 
-debugLog("loader v7 started; game=" .. tostring(game.PlaceId))
+debugLog("loader v8 started; game=" .. tostring(game.PlaceId))
 
 -- Normalise a backend reply: strip whitespace and keep only a verdict token.
 local function verdictOf(res)
