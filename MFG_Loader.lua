@@ -5,6 +5,12 @@
 --  backend, then receives + runs the private script (which is
 --  stored as base64 chunks in the CODEXPATCH tab of the sheet
 --  and served by the Google Apps Script backend in m=script mode).
+--
+--  v1.2 (hardened): Google Apps Script cold-starts every /exec call
+--  with a 302 redirect handshake; a single failed fetch used to be
+--  mislabeled "Invalid key".  This build retries transient failures
+--  (empty / HTML / network error) and only treats an EXPLICIT
+--  INVALID/CLAIMED/GAMENOTALLOWED/B64ERR verdict as definitive.
 -- ============================================================
 
 local Players      = game:GetService("Players")
@@ -50,6 +56,28 @@ local function saveKey(key)
 			writefile(AUTH_CONFIG, HttpService:JSONEncode(data))
 		end
 	end)
+end
+
+-- Normalise a backend reply: strip whitespace and keep only a verdict token.
+local function verdictOf(res)
+	if type(res) ~= "string" then return "" end
+	return (res:gsub("%s", ""):upper()):sub(1, 26)
+end
+
+-- A reply that means the key check itself FAILED (definitive, no retry).
+local function isDefinitiveFail(res)
+	local v = verdictOf(res)
+	if v == "INVALID" or v == "CLAIMED" or v == "GAMENOTALLOWED" then return true end
+	if type(res) == "string" and res:lower():find("^b64err") then return true end
+	return false
+end
+
+-- A reply that looks like a transient failure (retry these).
+local function isTransientFailure(ok, res)
+	if not ok then return true end
+	if not res or res == "" then return true end
+	if res:find("<!DOCTYPE") or res:find("<html") or res:find("<HTML") then return true end
+	return false
 end
 
 local showKeyGuiFn
@@ -116,6 +144,39 @@ local function startWatchdog(key)
 	end)
 end
 
+-- Fetch the script from the backend with cold-start retries.
+-- Google Apps Script redirects the first /exec hit to a script.google-
+--usercontent.com echo URL; while the deployment spins up that handshake
+-- can time out or return an empty/HTML body.  We retry a few times and
+-- only give up on a real verdict, so a transient cold-start blip no
+-- longer shows up as "Invalid key".
+local function fetchScriptWithRetry(url, statusLabel)
+	local maxAttempts = 4
+	local attempt = 0
+	local lastReply = nil
+	while attempt < maxAttempts do
+		attempt = attempt + 1
+		if statusLabel then
+			statusLabel.Text = "⏳ Verifying key with server (" .. attempt .. "/" .. maxAttempts .. ")..."
+			statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+		end
+		local ok, res = pcall(function()
+			return game:HttpGet(url, true)
+		end)
+		if ok and type(res) == "string" then
+			lastReply = res
+			if isDefinitiveFail(res) then
+				return res
+			end
+			if #res > 0 and not res:find("<!DOCTYPE") and not res:find("<html") and not res:find("<HTML") then
+				return res
+			end
+		end
+		task.wait(1.2 * attempt)
+	end
+	return lastReply or ""
+end
+
 local function fetchAndRun(key, statusLabel, callback)
 	if not key or key:gsub("%s", "") == "" then
 		if statusLabel then statusLabel.Text = "⚠️ Please enter a key!" statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100) end
@@ -141,21 +202,47 @@ local function fetchAndRun(key, statusLabel, callback)
 			HttpService:UrlEncode(player.Name)
 		) .. "&g=" .. GAME_CODE
 
-		local ok, res = pcall(function()
-			return game:HttpGet(url, true)
-		end)
+		local res = fetchScriptWithRetry(url, statusLabel)
 
-		if not ok or not res or res == "" or res == "INVALID" or res == "CLAIMED" or res == "GAMENOTALLOWED" or res:find("^B64ERR") or res:find("<!DOCTYPE") or res:find("<html") then
+		if res == "" or isTransientFailure(true, res) then
 			if statusLabel then
-				if res and res:find("^B64ERR") then
-					statusLabel.Text = "❌ Server Error: " .. res
-				elseif res == "GAMENOTALLOWED" then
-					statusLabel.Text = "❌ This key isn't unlocked for this game."
-				elseif res == "CLAIMED" then
-					statusLabel.Text = "❌ This key is registered to another account."
-				else
-					statusLabel.Text = "❌ Invalid key for account: " .. player.Name
-				end
+				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 120, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+
+		if res == "INVALID" then
+			if statusLabel then
+				statusLabel.Text = "❌ Invalid key for account: " .. player.Name
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+
+		if res == "GAMENOTALLOWED" then
+			if statusLabel then
+				statusLabel.Text = "❌ This key isn't unlocked for this game."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+
+		if res == "CLAIMED" then
+			if statusLabel then
+				statusLabel.Text = "❌ This key is registered to another account."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+
+		if res:lower():find("^b64err") then
+			if statusLabel then
+				statusLabel.Text = "❌ Server Error: " .. res
 				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 			end
 			if callback then callback(false) end
