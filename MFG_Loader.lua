@@ -6,11 +6,13 @@
 --  stored as base64 chunks in the CODEXPATCH tab of the sheet
 --  and served by the Google Apps Script backend in m=script mode).
 --
---  v1.2 (hardened): Google Apps Script cold-starts every /exec call
+--  v1.3 (hardened): Google Apps Script cold-starts every /exec call
 --  with a 302 redirect handshake; a single failed fetch used to be
---  mislabeled "Invalid key".  This build retries transient failures
---  (empty / HTML / network error) and only treats an EXPLICIT
---  INVALID/CLAIMED/GAMENOTALLOWED/B64ERR verdict as definitive.
+--  mislabeled "Invalid key".  This build warms the deployment with a
+--  tiny m=status call first, then fetches the script from the warm
+--  deployment, retrying transient failures (empty / HTML / network
+--  error) with backoff.  Only an EXPLICIT
+--  INVALID/CLAIMED/GAMENOTALLOWED/B64ERR verdict is definitive.
 -- ============================================================
 
 local Players      = game:GetService("Players")
@@ -150,14 +152,13 @@ end
 -- can time out or return an empty/HTML body.  We retry a few times and
 -- only give up on a real verdict, so a transient cold-start blip no
 -- longer shows up as "Invalid key".
-local function fetchScriptWithRetry(url, statusLabel)
-	local maxAttempts = 4
+local function fetchWithRetry(url, statusLabel, label, maxAttempts)
 	local attempt = 0
 	local lastReply = nil
 	while attempt < maxAttempts do
 		attempt = attempt + 1
 		if statusLabel then
-			statusLabel.Text = "⏳ Verifying key with server (" .. attempt .. "/" .. maxAttempts .. ")..."
+			statusLabel.Text = "⏳ " .. label .. " (" .. attempt .. "/" .. maxAttempts .. ")..."
 			statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
 		end
 		local ok, res = pcall(function()
@@ -172,7 +173,7 @@ local function fetchScriptWithRetry(url, statusLabel)
 				return res
 			end
 		end
-		task.wait(1.2 * attempt)
+		task.wait(1.5 * attempt)
 	end
 	return lastReply or ""
 end
@@ -193,17 +194,55 @@ local function fetchAndRun(key, statusLabel, callback)
 	if statusLabel then statusLabel.Text = "⏳ Verifying key with server..." statusLabel.TextColor3 = Color3.fromRGB(255, 200, 80) end
 
 	task.spawn(function()
-		local url = string.format("%s?u=%s&k=%s&m=script&uid=%s&key=%s&name=%s",
-			GS_URL,
-			HttpService:UrlEncode(player.Name),
-			HttpService:UrlEncode(key),
+		local baseParams = "u=" .. HttpService:UrlEncode(player.Name) .. "&k=" .. HttpService:UrlEncode(key) .. "&g=" .. GAME_CODE
+		local statusUrl = GS_URL .. "?" .. baseParams .. "&m=status"
+		local scriptUrl = string.format("%s?%s&m=script&uid=%s&key=%s&name=%s",
+			GS_URL, baseParams,
 			tostring(player.UserId),
 			HttpService:UrlEncode(key),
 			HttpService:UrlEncode(player.Name)
-		) .. "&g=" .. GAME_CODE
+		)
 
-		local res = fetchScriptWithRetry(url, statusLabel)
+		-- Step 1: warm the Apps Script deployment with the tiny status call.
+		-- The first /exec hit after idle spins up the service (16s cold-start,
+		-- 302 redirect handshake); the small payload warms it so the big
+		-- m=script fetch that follows succeeds instead of timing out.
+		local statusRes = fetchWithRetry(statusUrl, statusLabel, "Warming up key server...", 5)
+		if statusRes == "" or isTransientFailure(true, statusRes) then
+			if statusLabel then
+				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 120, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+		if statusRes == "INVALID" then
+			if statusLabel then
+				statusLabel.Text = "❌ Invalid key for account: " .. player.Name
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+		if statusRes == "GAMENOTALLOWED" then
+			if statusLabel then
+				statusLabel.Text = "❌ This key isn't unlocked for this game."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
+		if statusRes == "CLAIMED" then
+			if statusLabel then
+				statusLabel.Text = "❌ This key is registered to another account."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+			if callback then callback(false) end
+			return
+		end
 
+		-- Step 2: deployment is warm now; fetch the script.
+		local res = fetchWithRetry(scriptUrl, statusLabel, "Verifying key with server...", 4)
 		if res == "" or isTransientFailure(true, res) then
 			if statusLabel then
 				statusLabel.Text = "❌ Server didn't respond. Check your internet and try again in a moment."
